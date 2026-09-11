@@ -35,11 +35,11 @@ warnings.filterwarnings("ignore")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--seed', type=int, default=6, help='Random seed.') 
-parser.add_argument('--dataset', type=str, default='polblogs', choices=['cora', 
+parser.add_argument('--dataset', type=str, default='cora', choices=['cora', 
                 'cora_ml', 'citeseer', 'polblogs', 'pubmed'], help='dataset') 
-parser.add_argument('--ptb_rate', type=float, default=0.05, 
+parser.add_argument('--ptb_rate', type=float, default=0.05,  
                                                     help='pertubation rate') 
-parser.add_argument('--beta_max', type=float, default=0.15, 
+parser.add_argument('--beta_max', type=float, default=1,   
                                                     help='Noise upper-range') 
 parser.add_argument('--beta_min', type=float, default=0.01, 
                                                     help='Noise lower-range') 
@@ -134,6 +134,7 @@ def test_noisy(new_adj, perturb):
         features_local = features
 
     best_acc_val = 0 
+    acc_list = []
     
     # We test the best noise value based on the validation nodes as specified
     # in the main paper
@@ -155,6 +156,10 @@ def test_noisy(new_adj, perturb):
         if acc_val > best_acc_val:
             best_acc_val = acc_val
             acc_test, _ = classifier.test(idx_test) 
+
+        acc_list.append(acc_test.item()) 
+
+    df[f'noisy_gcn_{perturb}'] = acc_list 
         
     return acc_test.item() 
 
@@ -171,12 +176,13 @@ def test_prune_noisy(new_adj, perturb):
         features_local = features
 
     best_acc_val = 0
+    acc_list = []
     # We test the best noise value based on the validation nodes as specified
     # in the main paper
     for beta in np.arange(0, args.beta_max, args.beta_min): 
         classifier = Noisy_PGCN(nfeat=features.shape[1], nhid=20, 
             nclass=labels.max().item() + 1, dropout=0., device=device, 
-                                                    noise_ratio_1=beta)  
+                                                    noise_ratio_1=beta) 
 
         classifier = classifier.to(device) 
 
@@ -185,12 +191,20 @@ def test_prune_noisy(new_adj, perturb):
                         verbose=False, attention=False) 
         classifier.eval() 
 
-        # Validation Acc 
+        # Validation Acc
         acc_val, _ = classifier.test(idx_val) 
 
-        if acc_val > best_acc_val:
-            best_acc_val = acc_val
-            acc_test, _ = classifier.test(idx_test) 
+        # if acc_val > best_acc_val:
+        #     best_acc_val = acc_val
+        #     acc_test, _ = classifier.test(idx_test) 
+        
+        best_acc_val = acc_val
+        acc_test, _ = classifier.test(idx_test) 
+
+        acc_list.append(acc_test.item()) 
+
+
+    df[f'noisy_pgcn_{perturb}'] = acc_list 
 
     return acc_test.item() 
 
@@ -203,7 +217,8 @@ if __name__ == '__main__':
     need to uncomment the last part to use the other benchamarks
     """ 
 
-    df = pd.read_csv('beta_test.csv', index_col=0) 
+    # df = pd.read_csv('beta_test.csv', index_col=0) 
+    df = pd.DataFrame() 
 
     adj, features, labels = data.adj, data.features, data.labels 
     idx_train, idx_val, idx_test = data.idx_train, data.idx_val, data.idx_test 
@@ -232,16 +247,16 @@ if __name__ == '__main__':
     modified_adj2 = torch.FloatTensor(modified_adj2.todense()) 
 
     
-    # print('=== testing NoisyGCN ===') 
-    # attention=False 
-    # acc_noise_clean=test_noisy(adj, 0) 
-    # acc_noise_attacked=test_noisy(modified_adj, 5) 
-    # acc_noise_attacked2=test_noisy(modified_adj2, 10) 
-    # print('---------------') 
-    # print("NoisyGCN Non Attacked Acc - {}" .format(acc_noise_clean)) 
-    # print("NoisyGCN Attacked 5% Acc - {}" .format(acc_noise_attacked)) 
-    # print("NoisyGCN Attacked 10% Acc - {}" .format(acc_noise_attacked2)) 
-    # print('---------------') 
+    print('=== testing NoisyGCN ===') 
+    attention=False 
+    acc_noise_clean=test_noisy(adj, 0) 
+    acc_noise_attacked=test_noisy(modified_adj, 5) 
+    acc_noise_attacked2=test_noisy(modified_adj2, 10) 
+    print('---------------') 
+    print("NoisyGCN Non Attacked Acc - {}" .format(acc_noise_clean)) 
+    print("NoisyGCN Attacked 5% Acc - {}" .format(acc_noise_attacked)) 
+    print("NoisyGCN Attacked 10% Acc - {}" .format(acc_noise_attacked2)) 
+    print('---------------') 
 
 
     print('=== testing pruning NoisyGCN ===') 
@@ -255,22 +270,7 @@ if __name__ == '__main__':
     print("NoisyPGCN Attacked 10% Acc - {}" .format(pacc_noise_attacked2)) 
     print('---------------') 
 
-    # new_row_df = pd.DataFrame({'noisygcn_0': [acc_noise_clean], 
-    #                            'noisygcn_5': [acc_noise_attacked], 
-    #                            'noisygcn_10': [acc_noise_attacked2],
-    #                            'noisypgcn_0': [pacc_noise_clean], 
-    #                            'noisypgcn_5': [pacc_noise_attacked], 
-    #                            'noisypgcn_10': [pacc_noise_attacked2],
-    #                            }) 
-    
-    new_row_df = pd.DataFrame({
-                               'noisypgcn_0': [pacc_noise_clean], 
-                               'noisypgcn_5': [pacc_noise_attacked], 
-                               'noisypgcn_10': [pacc_noise_attacked2],
-                               }) 
 
-    # # 用 concat 拼接，ignore_index=True 会让最终的索引重新编号
-    # df = pd.concat([df, new_row_df], ignore_index=True) 
 
     df.to_csv('beta_test.csv') 
 

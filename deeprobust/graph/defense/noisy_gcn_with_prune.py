@@ -14,7 +14,6 @@ import math
 import torch
 import torch.optim as optim
 from torch.nn.parameter import Parameter
-from torch.nn.modules.module import Module
 from deeprobust.graph import utils
 from copy import deepcopy
 import scipy
@@ -22,17 +21,11 @@ from sklearn.metrics import jaccard_score
 from sklearn.metrics.pairwise import euclidean_distances, cosine_similarity
 import numpy as np
 from deeprobust.graph.utils import *
-#from torch_geometric.nn import GINConv, GATConv, GCNConv, JumpingKnowledge
-
-from torch_geometric.nn import GINConv, GATConv, GCNConv, JumpingKnowledge
-
-from deeprobust.graph.defense.torch_conv_guard import GCNConv
-
-from torch.nn import Sequential, Linear, ReLU
-from sklearn.preprocessing import normalize
+from torch_geometric.nn import GCNConv
+from torch.nn import Sequential, Linear, ReLU 
+from sklearn.preprocessing import normalize 
 from scipy.sparse import lil_matrix 
-
-from .apply_pruning import pruning
+from .pruner_agent import Pruner_agent
 
 
 def inject_noise(x, scale_noise):
@@ -71,7 +64,7 @@ class Noisy_PGCN(nn.Module):
 
         self.device = device
         self.nfeat = nfeat
-        self.hidden_sizes = [nhid]
+        self.hidden_sizes = [nhid] 
         self.nclass = nclass
         self.dropout = dropout
         self.lr = lr
@@ -114,10 +107,12 @@ class Noisy_PGCN(nn.Module):
         self.gc1 = GCNConv(nfeat, nhid, bias=True,)
         self.gc2 = GCNConv(nhid, nclass, bias=True,)
 
-        self.reg_weight = 1e-5
 
 
-    def forward(self, x, adj, l1_reg=False): 
+    def forward(self, x, adj, l1_reg=True): 
+        """we don't change the edge_index, just update the edge_weight;
+        some edge_weight are regarded as removed if it equals to zero"""
+
         """we don't change the edge_index, just update the edge_weight;
         some edge_weight are regarded as removed if it equals to zero"""
         x = x.to_dense()
@@ -125,39 +120,23 @@ class Noisy_PGCN(nn.Module):
         """GCN and GAT"""
         if self.attention:
             adj = self.att_coef(x, adj, i=0).to(self.device)
+        edge_index = adj._indices()
+        x = self.gc1(x, edge_index, edge_weight=adj._values())
 
 
-        edge_index = adj._indices() 
+        x = F.relu(x)
+        # l1_act = 0
+        # if l1_reg:
+        #     l1_act = x.abs().sum()  
 
-        x = self.gc1(x, edge_index, edge_weight=adj._values()) 
+        if self.training:
+            noise = inject_noise(x, self.noise_ratio_1)
+            x = x + noise
 
-        if self.training: 
-            noise = inject_noise(x, self.noise_ratio_1) 
-            x = x + noise 
-
-
-        x = F.relu(x) 
         # x = self.bn1(x)
         if self.attention:  # if attention=True, use attention mechanism
             adj_2 = self.att_coef(x, adj, i=1).to(self.device)
             adj_memory = adj_2.to_dense()  # without memory
-
-        ### l1 loss
-        # l1_act = 0
-        # if l1_reg:
-        #     l1_act = x.abs().sum() 
-        
-        x = F.relu(x) 
-
-        l1_act = 0
-        if l1_reg:
-            l1_act = x.abs().sum() 
-
-        # x = self.bn1(x) 
-        if self.attention:  # if attention=True, use attention mechanism
-            adj_2 = self.att_coef(x, adj, i=1).to(self.device)
-            adj_memory = adj_2.to_dense()  # without memory 
-
             # adj_memory = self.gate * adj.to_dense() + (1 - self.gate) * adj_2.to_dense()
             row, col = adj_memory.nonzero()[:,0], adj_memory.nonzero()[:,1]
             edge_index = torch.stack((row, col), dim=0)
@@ -168,16 +147,17 @@ class Noisy_PGCN(nn.Module):
 
 
         x = F.dropout(x, self.dropout, training=self.training) 
-
-        # x = F.dropout(x, self.dropout, training=self.training) 
         x = self.gc2(x, edge_index, edge_weight=adj_values) 
 
-        if l1_act: 
-            return F.log_softmax(x, dim=1), self.reg_weight * l1_act 
-        else: 
-            return F.log_softmax(x, dim=1) 
 
+        # if l1_reg: 
+        #     return F.log_softmax(x, dim=1), self.reg_weight * l1_act 
+        # else: 
+        #     return F.log_softmax(x, dim=1) 
 
+        return F.log_softmax(x, dim=1) 
+
+        
     def initialize(self):
         self.gc1.reset_parameters()
         self.gc2.reset_parameters()
@@ -259,7 +239,6 @@ class Noisy_PGCN(nn.Module):
     def fit(self, features, adj, labels, idx_train, idx_val=None, idx_test=None, train_iters=81, att_0=None,
             attention=False, model_name=None, initialize=True, verbose=False, normalize=False, patience=510, ):
 
-
         '''
             train the gcn model, when idx_val is not None, pick the best model 
             according to the validation loss 
@@ -273,23 +252,12 @@ class Noisy_PGCN(nn.Module):
         #     adj = att_0 # update adj
         #     self.sim = att_0 # update att_0
 
-        # self.device = self.gc1.weight.device
-
         if initialize:
             self.initialize()
 
         if type(adj) is not torch.Tensor:
             features, adj, labels = utils.to_tensor(features, adj, labels, device=self.device)
         else:
-            self.idx_test = idx_test 
-            self.attention = attention 
-
-        if initialize:
-            self.initialize() 
-
-        if type(adj) is not torch.Tensor: 
-            features, adj, labels = utils.to_tensor(features, adj, labels, device=self.device) 
-        else: 
             features = features.to(self.device) 
             adj = adj.to(self.device) 
             labels = labels.to(self.device) 
@@ -320,10 +288,6 @@ class Noisy_PGCN(nn.Module):
             else:
                 self._train_with_val(labels, idx_train, idx_val, train_iters, verbose)
 
-            self._train_without_val(labels, idx_train, train_iters, verbose) 
-
-
-
     def _train_without_val(self, labels, idx_train, train_iters, verbose):
         self.train()
         optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -348,14 +312,18 @@ class Noisy_PGCN(nn.Module):
         best_loss_val = 100
         best_acc_val = 0
 
+        example_input = [self.features, self.adj_norm] 
+        pruner_agent = Pruner_agent(self, example_input) 
+        pruner_agent.update_regularize() 
 
-        for i in range(50): 
-            # print('epoch', i)
-            self.train()
-            optimizer.zero_grad()
-            output, reg_loss = self.forward(self.features, self.adj_norm, l1_reg=True) 
-            loss_train = F.nll_loss(output[idx_train], labels[idx_train]) + reg_loss 
+        for i in range(100): 
+            # print('epoch', i) 
+            self.train() 
+            optimizer.zero_grad() 
+            output = self.forward(self.features, self.adj_norm) 
+            loss_train = F.nll_loss(output[idx_train], labels[idx_train]) 
             loss_train.backward() 
+            pruner_agent.regularizing() 
             optimizer.step() 
             self.eval() 
 
@@ -389,23 +357,25 @@ class Noisy_PGCN(nn.Module):
                 self.output = output 
                 weights = deepcopy(self.state_dict()) 
 
-            # if i == 50:
+            # if i == 50: 
 
         ##### prune now 
-        # print("do prune")
-        example_input = [self.features, self.adj_norm] 
-        pruning(self, example_input) 
+        # print("do prune") 
+        self.load_state_dict(weights) 
+        pruner_agent.pruning() 
         ##### 
 
         weights = deepcopy(self.state_dict())
+        pruner_agent.update_regularize() 
 
-        for i in range(train_iters-50): 
+        for i in range(train_iters-100): 
             # print('epoch', i)
-            self.train()
-            optimizer.zero_grad()
+            self.train() 
+            optimizer.zero_grad() 
             output = self.forward(self.features, self.adj_norm) 
             loss_train = F.nll_loss(output[idx_train], labels[idx_train]) 
             loss_train.backward() 
+            pruner_agent.regularizing() 
             optimizer.step() 
             self.eval() 
 
@@ -429,20 +399,18 @@ class Noisy_PGCN(nn.Module):
                 weights = deepcopy(self.state_dict()) 
 
 
-        if verbose:
-            print('=== picking the best model according to the performance on validation ===') 
-
-
         self.load_state_dict(weights) 
         # """my test"""
         # output_ = self.forward(self.features, self.adj_norm)
         # acc_test_ = utils.accuracy(output_[self.idx_test], labels[self.idx_test])
         # print('With best weights, test acc:', acc_test_)
 
+
+
     def _train_with_early_stopping(self, labels, idx_train, idx_val, train_iters, patience, verbose): 
         if verbose:
             print('=== training gcn model ===')
-        optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay) 
 
         early_stopping = patience
         best_loss_val = 100

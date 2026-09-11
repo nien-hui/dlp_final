@@ -22,15 +22,12 @@ from sklearn.metrics import jaccard_score
 from sklearn.metrics.pairwise import euclidean_distances, cosine_similarity
 import numpy as np
 from deeprobust.graph.utils import *
-#from torch_geometric.nn import GINConv, GATConv, GCNConv, JumpingKnowledge
-
 from torch_geometric.nn import GINConv, GATConv, GCNConv, JumpingKnowledge
-from deeprobust.graph.defense.torch_conv_guard import GCNConv
-
+# from deeprobust.graph.defense.torch_conv_guard import GCNConv
 
 from torch.nn import Sequential, Linear, ReLU
 from sklearn.preprocessing import normalize
-from scipy.sparse import lil_matrix
+from scipy.sparse import lil_matrix 
 
 
 def inject_noise(x, scale_noise):
@@ -49,7 +46,7 @@ def inject_noise(x, scale_noise):
     # Initiate a centred gaussian
     loc = torch.zeros(x.shape, dtype=torch.float32)
     scale = torch.ones(x.shape, dtype=torch.float32)
-    noise = torch.distributions.Normal(loc, scale).sample()
+    noise = torch.distributions.Normal(loc, scale).sample() 
 
     # Rescale the gaussian based on the noise ratio
     noise = scale_noise * noise 
@@ -165,11 +162,7 @@ class Noisy_GCN(nn.Module):
             adj_values = adj._values()
 
 
-
-
         x = F.dropout(x, self.dropout, training=self.training)
-
-
         x = self.gc2(x, edge_index, edge_weight=adj_values)
 
 
